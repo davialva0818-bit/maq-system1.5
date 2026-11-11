@@ -23,6 +23,7 @@ import {
   Plus, Search, MapPin, Loader2, Trash2, Copy, Printer, Route, ArrowUpDown,
   ChevronDown, ChevronUp, Phone, Navigation, Clock, X, Pencil, MessageCircle, Map as MapIcon, ExternalLink, AlertTriangle, Square, RefreshCw
 } from 'lucide-react';
+import { RouteSuggestionsKanban } from '../components/planner/RouteSuggestionsKanban';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
 const API = `${BACKEND_URL}/api`;
@@ -271,6 +272,14 @@ const BASE_LNG = -43.9420748;
 const hasCoords = (o) => o != null && o.lat != null && o.lng != null && o.lat !== '' && o.lng !== ''
   && Number.isFinite(Number(o.lat)) && Number.isFinite(Number(o.lng));
 const MAX_ROUTE_OS = 9;
+
+// Garantia x Orçamento (Fora de garantia conta como orçamento: o cliente paga).
+const attendKind = (o) => {
+  const t = (o?.service_type || '').toLowerCase();
+  if (t.includes('fora') || t.includes('orçamento') || t.includes('orcamento') || t.includes('instala')) return 'orcamento';
+  if (t.includes('garantia') || t.includes('cortesia')) return 'garantia';
+  return 'outro';
+};
 // Mapa do roteiro: base → paradas (sem voltar para a base).
 const RETURN_TO_BASE = false;
 
@@ -2308,6 +2317,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
   const [fStartDate, setFStartDate] = useState('');
   const [fEndDate, setFEndDate] = useState('');
   const [step2Search, setStep2Search] = useState('');
+  const [fAttendType, setFAttendType] = useState('all');
   // Debounced version of step2Search — actually used for filtering. The input
   // is controlled by step2Search (instant feedback while typing) but the
   // expensive `step2Orders` filter only runs after the user pauses typing.
@@ -2337,8 +2347,6 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
   // Insights vindos da LLM (endpoint /api/routes/analyze-suggestions).
   // Map: nome do grupo → {rationale, priority_score, tags, top_reason}.
   // Preenchido em paralelo às sugestões locais — o painel usa quando chega.
-  const [aiInsights, setAiInsights] = useState({});
-  const [loadingAI, setLoadingAI] = useState(false);
   // Chaves das sugestões selecionadas pelo usuário (multi-select).
   // Preenchido via checkbox em cada card do painel. Ao clicar em "Aplicar",
   // as OSs de TODAS as sugestões marcadas são unidas (dedupe) e viram a
@@ -2428,16 +2436,17 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
   // Step 2 filtered view — memoized; recalculates only when filteredOrders or
   // the DEBOUNCED search term change. Pre-lowercases the search string once.
   const step2Orders = React.useMemo(() => {
-    if (!step2SearchDebounced) return filteredOrders;
+    const typed = fAttendType === 'all' ? filteredOrders : filteredOrders.filter(o => attendKind(o) === fAttendType);
+    if (!step2SearchDebounced) return typed;
     const s = step2SearchDebounced.toLowerCase();
-    return filteredOrders.filter(o =>
+    return typed.filter(o =>
       (o.os_number || '').toLowerCase().includes(s) ||
       (o.customer_name || '').toLowerCase().includes(s) ||
       (o.address || '').toLowerCase().includes(s) ||
       (o.neighborhood || '').toLowerCase().includes(s) ||
       (o.phone1 || '').toLowerCase().includes(s)
     );
-  }, [filteredOrders, step2SearchDebounced]);
+  }, [filteredOrders, step2SearchDebounced, fAttendType]);
 
   // Client-side pagination (10 per page) — antes o backend paginava as OS
   // e os filtros só via as 10 da página atual (guia OSs Atrasadas + Roteiro).
@@ -2605,7 +2614,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
     try {
       // 1. Filtra por status roteirizáveis (nunca Finalizada/Cancelada).
       // 2. Cada grupo mostra no máximo MAX_ROUTE_OS (9) OSs, as mais relevantes do critério.
-      const routableOrders = filteredOrders.filter(isRoutable);
+      const routableOrders = step2Orders.filter(isRoutable);
       const osNumbers = routableOrders.map(o => o.os_number);
       if (osNumbers.length < 2) {
         toast.error('Poucas OS elegíveis (status roteirizável) para sugestão');
@@ -2644,91 +2653,28 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
       const now = Date.now();
       const daysBetween = (o) => Math.max(0, Math.floor((now - parseDate(o).getTime()) / 86400000));
 
-      // ─── OPÇÃO 1: REGIÃO (densidade) ─────────────────────────────
-      // Encontra o cluster mais denso: para cada OS, conta quantas outras
-      // OSs estão dentro de 3 km. Escolhe a OS com maior contagem como
-      // "seed" e retorna todas as OSs dentro do raio de 3km ao redor dela.
-      // Assim, "Região" agrupa OSs QUE ESTÃO PERTO UMAS DAS OUTRAS, e não
-      // perto da base.
-      const RADIUS_KM = 3;
-      let bestSeed = null;
-      let bestCount = 0;
-      for (const seed of withCoords) {
-        const c = withCoords.filter(o => haversine(seed.lat, seed.lng, o.lat, o.lng) <= RADIUS_KM).length;
-        if (c > bestCount) { bestCount = c; bestSeed = seed; }
-      }
-      const regionCluster = bestSeed
-        ? withCoords
-            .filter(o => haversine(bestSeed.lat, bestSeed.lng, o.lat, o.lng) <= RADIUS_KM)
-            .sort((a, b) => haversine(bestSeed.lat, bestSeed.lng, a.lat, a.lng) - haversine(bestSeed.lat, bestSeed.lng, b.lat, b.lng))
-        : [];
-
-      // ─── OPÇÃO 2: PRÓXIMAS DA BASE ────────────────────────────────
-      // Todas as OSs até 15 km da base, ordenadas por distância. Sem cap
-      // artificial — se houver 40 OSs dentro do raio, mostra as 40.
-      const NEAR_BASE_KM = 15;
-      const nearBase = withCoords
-        .filter(o => haversine(baseLat, baseLng, o.lat, o.lng) <= NEAR_BASE_KM)
-        .sort((a, b) => haversine(baseLat, baseLng, a.lat, a.lng) - haversine(baseLat, baseLng, b.lat, b.lng));
-
-      // ─── OPÇÃO 3: TEMPO (>10 dias em aberto) ──────────────────────
-      const overdue = withCoords
-        .map(o => ({ ...o, _days: daysBetween(o) }))
-        .filter(o => o._days > 10)
-        .sort((a, b) => b._days - a._days);
-
-      // ─── OPÇÃO 4: PRIORIDADE ──────────────────────────────────────
-      const priorityOnly = withCoords
-        .filter(o => !!o.priority)
-        .sort((a, b) => haversine(baseLat, baseLng, a.lat, a.lng) - haversine(baseLat, baseLng, b.lat, b.lng));
-
-      const avgDist = (arr) => arr.length === 0 ? 0 : arr.reduce((s, o) => s + haversine(baseLat, baseLng, o.lat, o.lng), 0) / arr.length;
-      const top = (arr) => arr.slice(0, MAX_ROUTE_OS);
-
-      const options = [
-        { key: 'regiao', name: 'Região (Cluster Denso)', orders: top(regionCluster), avgDist: avgDist(top(regionCluster)).toFixed(1), icon: '🗺' },
-        { key: 'proximas', name: 'Próximas da Base', orders: top(nearBase), avgDist: avgDist(top(nearBase)).toFixed(1), icon: '📍' },
-        { key: 'tempo', name: 'Tempo (>10 dias em aberto)', orders: top(overdue), avgDist: avgDist(top(overdue)).toFixed(1), icon: '⏰' },
-        { key: 'prioridade', name: 'Prioridade (marcadas)', orders: top(priorityOnly), avgDist: avgDist(top(priorityOnly)).toFixed(1), icon: '⚡' },
-      ];
-      setProximityOptions(options);
-      setShowProximityPanel(true);
-
-      // ─── LLM enrichment (Emergent LLM Key via backend) ───
-      // A LLM nunca é exposta no frontend — apenas envia os grupos
-      // resumidos para o backend, que consulta OpenAI e devolve
-      // rationale/score/tags.
-      const buildPayload = (group) => ({
-        name: group.name,
-        avg_dist_km: parseFloat(group.avgDist) || null,
-        orders: group.orders.slice(0, 25).map(o => ({  // cap por egress
-          os_number: String(o.os_number),
-          customer_name: o.customer_name || '',
-          city: o.city || '',
-          neighborhood: o.neighborhood || '',
-          service_type: o.service_type || '',
-          status: o.status || '',
-          priority: !!o.priority,
-          days_open: daysBetween(o),
-          lat: o.lat, lng: o.lng,
+      // Inteligência de Roteiros (backend): região → cidade → bairros, tempo real pelas ruas.
+      const byOs = new Map(withCoords.map(o => [o.os_number, o]));
+      const intel = await axios.post(`${API}/routes/regional-suggestions`, {
+        orders: withCoords.map(o => ({
+          os_number: String(o.os_number), lat: o.lat, lng: o.lng, city: o.city || '',
+          neighborhood: o.neighborhood || '', priority: !!o.priority, days_open: daysBetween(o),
         })),
-      });
-      setLoadingAI(true);
-      setAiInsights({});
-      axios.post(`${API}/routes/analyze-suggestions`, {
-        groups: options.filter(g => g.orders.length > 0).map(buildPayload),
-        base_lat: baseLat,
-        base_lng: baseLng,
-      }, getAuthHeader())
-        .then(res => {
-          const map = {};
-          (res.data?.groups || []).forEach(g => { map[g.name] = g; });
-          setAiInsights(map);
-        })
-        .catch(err => {
-          console.warn('AI insights indisponíveis:', err?.response?.status);
-        })
-        .finally(() => setLoadingAI(false));
+        base_lat: baseLat, base_lng: baseLng, max_routes: 4, max_stops: MAX_ROUTE_OS,
+      }, getAuthHeader());
+      const regional = (intel.data?.routes || []).map((r, i) => ({
+        key: `r${i + 1}`,
+        name: r.name,
+        meta: r,
+        orders: r.stops.map(s => ({ ...byOs.get(s.os_number), _eta: s.eta, _leg: s.leg_minutes })).filter(o => o.os_number),
+      }));
+      if (regional.length === 0) {
+        toast.error('Nenhum roteiro regional encontrado');
+        return;
+      }
+      setProximityOptions(regional);
+      setShowProximityPanel(true);
+      toast.success(`${intel.data.grouped} OS conciliadas em ${regional.length} roteiro(s)` + (intel.data.unassigned ? ` · ${intel.data.unassigned} ficaram de fora` : ''));
     } catch (err) {
       console.error('Proximity error:', err);
       toast.error('Erro ao calcular sugestões');
@@ -3139,12 +3085,8 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
                   <div className="border rounded-lg p-3 bg-blue-50 space-y-2" data-testid="proximity-panel">
                     <div className="flex items-center justify-between">
                       <h4 className="text-sm font-medium text-blue-900 flex items-center gap-2">
-                        Sugestões de Roteiro
-                        {loadingAI && (
-                          <span className="text-[10px] text-blue-600 font-normal flex items-center gap-1">
-                            <Loader2 className="h-3 w-3 animate-spin" /> analisando com IA…
-                          </span>
-                        )}
+                        Inteligência de Roteiros
+                        <span className="text-[10px] font-normal text-blue-700">região → cidade → bairros próximos</span>
                       </h4>
                       <div className="flex items-center gap-2">
                         <Button
@@ -3162,97 +3104,31 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
                       </div>
                     </div>
                     <p className="text-[10px] text-blue-800/70">
-                      Marque uma ou mais sugestões para combinar (as OSs se unem automaticamente).
-                      Clique num card sem marcar para aplicar só ele.
+                      Cada quadro é um roteiro montado automaticamente pela proximidade e tempo de deslocamento,
+                      saindo e voltando à base. Marque vários para combinar ou use um direto.
                     </p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-                      {proximityOptions.map((opt, i) => {
-                        const ai = aiInsights[opt.name];
-                        const score = ai?.priority_score;
-                        const checked = selectedSuggestions.has(opt.key);
-                        const empty = opt.orders.length === 0;
-                        const tagColor = (t) => ({
-                          'perto-da-base': 'bg-emerald-100 text-emerald-700',
-                          'prioridade': 'bg-red-100 text-red-700',
-                          'atraso-alto': 'bg-amber-100 text-amber-700',
-                          'regiao-densa': 'bg-indigo-100 text-indigo-700',
-                          'alternativa': 'bg-slate-100 text-slate-700',
-                        }[t] || 'bg-gray-100 text-gray-700');
-                        return (
-                          <div
-                            key={i}
-                            className={`p-3 rounded-lg border-2 bg-white text-left transition-colors ${
-                              empty ? 'border-gray-200 opacity-50' :
-                              checked ? 'border-blue-600 ring-2 ring-blue-200' : 'border-blue-200 hover:border-blue-400'
-                            }`}
-                            data-testid={`proximity-option-${i}`}
-                          >
-                            <div className="flex items-start gap-2">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={empty}
-                                onChange={() => toggleSuggestion(opt.key)}
-                                className="mt-0.5 h-4 w-4 rounded"
-                                data-testid={`proximity-check-${opt.key}`}
-                                onClick={e => e.stopPropagation()}
-                              />
-                              <button
-                                onClick={() => !empty && applyProximitySuggestion(opt)}
-                                disabled={empty}
-                                className="flex-1 text-left"
-                                data-testid={`proximity-apply-${opt.key}`}
-                              >
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="text-sm font-medium text-gray-800">
-                                    {opt.icon} {opt.name}
-                                  </div>
-                                  {typeof score === 'number' && !empty && (
-                                    <span
-                                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                                        score >= 75 ? 'bg-red-600 text-white' :
-                                        score >= 50 ? 'bg-amber-500 text-white' :
-                                        'bg-slate-400 text-white'
-                                      }`}
-                                      title="Prioridade sugerida pela IA (0-100)"
-                                    >
-                                      IA {Math.round(score)}
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1">
-                                  {empty ? 'Sem OSs' : `${opt.orders.length} OS · ~${opt.avgDist} km da base`}
-                                </div>
-                                {ai?.rationale && !empty && (
-                                  <div className="text-[11px] text-slate-700 mt-1.5 leading-snug line-clamp-3">
-                                    {ai.rationale}
-                                  </div>
-                                )}
-                                {ai?.tags && ai.tags.length > 0 && !empty && (
-                                  <div className="mt-1.5 flex flex-wrap gap-1">
-                                    {ai.tags.slice(0, 4).map((t, j) => (
-                                      <span key={j} className={`text-[9px] px-1.5 py-0.5 rounded-full ${tagColor(t)}`}>
-                                        {t}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                                {!empty && (
-                                  <div className="text-[10px] text-gray-400 mt-1 truncate">
-                                    {opt.orders.slice(0, 3).map(o => o.os_number).join(', ')}{opt.orders.length > 3 ? '...' : ''}
-                                  </div>
-                                )}
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <RouteSuggestionsKanban
+                      options={proximityOptions}
+                      selected={selectedSuggestions}
+                      onToggle={toggleSuggestion}
+                      onApply={applyProximitySuggestion}
+                    />
                   </div>
                 )}
 
                 {/* Search in Step 2 */}
-                <div className="relative">
+                <div className="flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={fAttendType}
+                  onChange={e => { setFAttendType(e.target.value); setOsPage(1); }}
+                  className="h-9 rounded-md border border-input bg-white px-2 text-sm"
+                  data-testid="route-attend-type-filter"
+                >
+                  <option value="all">Todos os atendimentos</option>
+                  <option value="garantia">Garantia</option>
+                  <option value="orcamento">Orçamento / Fora de garantia</option>
+                </select>
+                <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                   <Input
                     value={step2Search}
@@ -3261,6 +3137,7 @@ const CreateRouteModal = ({ open, onClose, onCreated, token, technicianNames = [
                     className="pl-9"
                     data-testid="route-step2-search"
                   />
+                </div>
                 </div>
 
                 {/* Desktop table - hidden on mobile */}

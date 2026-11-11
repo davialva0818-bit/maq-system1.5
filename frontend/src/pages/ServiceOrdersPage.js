@@ -56,8 +56,14 @@ import {
   Check,
   ChevronDown,
   AlertTriangle,
-  Tags
+  Tags,
+  Minus,
+  List as ListIcon,
+  LayoutGrid,
+  Table2
 } from 'lucide-react';
+import { OrderInlineEditor } from '../components/OrderInlineEditor';
+import { OrdersTableView } from '../components/OrdersTableView';
 
 // In production, use relative URLs (same origin)
 // In development, use REACT_APP_BACKEND_URL
@@ -205,6 +211,8 @@ const ServiceOrdersPage = () => {
   const { getAuthHeader, isInvisacook } = useAuth();
   const location = useLocation();
   const [activeTab, setActiveTab] = useState('history');
+  const [viewMode, setViewMode] = useState(() => localStorage.getItem('os_view_mode') || 'list');
+  const [expandedOS, setExpandedOS] = useState(new Set());
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -602,6 +610,27 @@ const fetchOrders = useCallback(async () => {
     setLaudoOrder((prev) => (prev && prev.os_number === osNumber ? { ...prev, ...patch } : prev));
     setOrders((prev) => prev.map((o) => (o.os_number === osNumber ? { ...o, ...patch } : o)));
   };
+
+  const changeViewMode = (v) => { setViewMode(v); localStorage.setItem('os_view_mode', v); };
+  const toggleExpanded = (osNumber) => setExpandedOS((prev) => {
+    const next = new Set(prev);
+    if (next.has(osNumber)) next.delete(osNumber); else next.add(osNumber);
+    return next;
+  });
+  const renderInlineEditor = (order) => (
+    <OrderInlineEditor order={order} statuses={OS_STATUSES} onPatch={applyOrderUpdates} onOpenFull={handleOrderClick} />
+  );
+  const renderExpandButton = (order) => (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); toggleExpanded(order.os_number); }}
+      className="grid h-7 w-7 place-items-center rounded-md border border-gray-300 text-gray-600 transition-colors hover:bg-gray-900 hover:text-white"
+      title={expandedOS.has(order.os_number) ? 'Recolher' : 'Expandir dados da OS'}
+      data-testid={`expand-card-${order.os_number}`}
+    >
+      {expandedOS.has(order.os_number) ? <Minus size={14} /> : <Plus size={14} />}
+    </button>
+  );
 
   const handleUpdateOrder = async (updatedData) => {
     try {
@@ -1080,6 +1109,21 @@ const fetchOrders = useCallback(async () => {
               </CardContent>
             </Card>
 
+            {/* View mode */}
+            <div className="flex items-center justify-end gap-2" data-testid="view-mode-area">
+              <span className="text-xs text-gray-500">Visualização</span>
+              <Select value={viewMode} onValueChange={changeViewMode}>
+                <SelectTrigger className="h-8 w-36 border-gray-300 text-sm" data-testid="view-mode-select">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="list" data-testid="view-mode-list"><span className="flex items-center gap-2"><ListIcon size={14} />Lista</span></SelectItem>
+                  <SelectItem value="grid" data-testid="view-mode-grid"><span className="flex items-center gap-2"><LayoutGrid size={14} />Grade</span></SelectItem>
+                  <SelectItem value="table" data-testid="view-mode-table"><span className="flex items-center gap-2"><Table2 size={14} />Tabela</span></SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
             {/* Orders List */}
             {loading ? (
               <div className="flex items-center justify-center py-12">
@@ -1091,17 +1135,39 @@ const fetchOrders = useCallback(async () => {
                   <p className="text-gray-500">Nenhuma ordem de serviço encontrada</p>
                 </CardContent>
               </Card>
+            ) : viewMode === 'table' ? (
+              <OrdersTableView
+                orders={orders}
+                expanded={expandedOS}
+                onToggle={toggleExpanded}
+                onOpen={handleOrderClick}
+                statusColors={STATUS_COLORS}
+                normalizeType={normalizeServiceType}
+                renderEditor={renderInlineEditor}
+                renderActions={(order) => (
+                  <div className="flex items-center gap-1">
+                    {order.phone1 && (
+                      <button onClick={() => openWhatsApp(order.phone1)} className="p-0.5 hover:opacity-80" title="WhatsApp" data-testid={`table-whatsapp-${order.os_number}`}>
+                        <img src={WHATSAPP_LOGO} alt="WhatsApp" className="h-5 w-5 object-contain" />
+                      </button>
+                    )}
+                    <button onClick={() => openMaps(order)} className="p-0.5 hover:opacity-80" title="Google Maps" data-testid={`table-maps-${order.os_number}`}>
+                      <img src={MAPS_LOGO} alt="Maps" className="h-5 w-5 object-contain" />
+                    </button>
+                  </div>
+                )}
+              />
             ) : (
-              <div className="grid gap-4" data-testid="orders-list">
+              <div className={`grid gap-4 ${viewMode === 'grid' ? 'sm:grid-cols-2 xl:grid-cols-3' : ''}`} data-testid="orders-list">
                 {orders.map((order) => (
                   <Card 
                     key={order.id} 
-                    className="border-gray-200 hover:shadow-md transition-shadow cursor-pointer"
+                    className={`border-gray-200 hover:shadow-md transition-shadow cursor-pointer ${viewMode === 'grid' && expandedOS.has(order.os_number) ? 'sm:col-span-2 xl:col-span-3' : ''}`}
                     onClick={() => handleOrderClick(order)}
                     data-testid={`order-card-${order.os_number}`}
                   >
                     <CardContent className="p-4">
-                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                      <div className={`flex flex-col justify-between gap-4 ${viewMode === 'grid' ? '' : 'lg:flex-row lg:items-center'}`}>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap mb-2">
                             {/* Source Logo — Telecontrol / Invisacook / Mastermaq */}
@@ -1189,9 +1255,10 @@ const fetchOrders = useCallback(async () => {
                           )}
                         </div>
                         
-                        <div className="flex flex-col items-end gap-2" onClick={(e) => e.stopPropagation()}>
+                        <div className={`flex gap-2 ${viewMode === 'grid' ? 'flex-row-reverse items-center justify-between' : 'flex-col items-end'}`} onClick={(e) => e.stopPropagation()}>
                           <BrandLogo brand={order.brand} size="sm" />
                           <div className="flex items-center gap-2 flex-wrap">
+                          {renderExpandButton(order)}
                           {order.phone1 && (
                             <button
                               onClick={() => openWhatsApp(order.phone1)}
@@ -1227,6 +1294,7 @@ const fetchOrders = useCallback(async () => {
                           </div>
                         </div>
                       </div>
+                      {expandedOS.has(order.os_number) && renderInlineEditor(order)}
                     </CardContent>
                   </Card>
                 ))}
@@ -1963,6 +2031,8 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
   const autoSaveTimerRef = useRef(null);
   const initialOrderRef = useRef(null);
   const [printCount, setPrintCount] = useState(0);
+  const [modalTab, setModalTab] = useState('os');
+  useEffect(() => { setModalTab('os'); }, [order?.os_number]);
 
   useEffect(() => {
     if (order) {
@@ -2426,6 +2496,14 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
               )}
             </div>
 
+            <div className="inline-flex rounded-md bg-gray-100 p-1 text-sm" role="tablist" data-testid="modal-tabs">
+              {[['os', 'Dados da OS'], ['laudo', 'Dados para Laudo']].map(([k, l]) => (
+                <button key={k} type="button" role="tab" onClick={() => setModalTab(k)} data-testid={`modal-tab-${k}`}
+                  className={`rounded px-4 py-1.5 font-medium transition-colors ${modalTab === k ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>{l}</button>
+              ))}
+            </div>
+
+            {modalTab === 'os' && (<>
             {/* Status + Priority */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-2">
@@ -2768,9 +2846,11 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
               />
             </div>
 
+            </>)}
+
             {/* Laudo Fields - Pre-fill section */}
-            <div className="border-t border-gray-200 pt-4 mt-2">
-              <h4 className="text-sm font-semibold text-gray-700 mb-3">Dados para Laudo</h4>
+            {modalTab === 'laudo' && (
+            <div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label>Diagnóstico Técnico</Label>
@@ -3130,7 +3210,9 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
                 </div>
               </div>
             </div>
+            )}
 
+            {modalTab === 'os' && (<>
             {/* Customer History */}
             <div className="border-t border-gray-200 pt-4 mt-2">
               <h4 className="text-sm font-semibold text-gray-700 mb-3" data-testid="customer-history-title">Historico do Cliente</h4>
@@ -3190,6 +3272,7 @@ const OrderDetailModal = ({ open, onClose, order, onUpdate, onWhatsApp, onMaps, 
                 </div>
               </div>
             )}
+            </>)}
           </div>
         </ScrollArea>
 

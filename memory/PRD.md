@@ -9,6 +9,14 @@
 - Instalados poppler-utils (pdftotext) e libreoffice-impress (indexação de manuais da Mi) — pacotes de sistema, reinstalar se o pod resetar
 - Pendente: GOOGLE_MAPS_API_KEY do backend continua vazia (a do frontend está preenchida)
 
+## 2026-11-11
+- Bug "Element type is invalid... AppRoutes": FinancialPage.js veio vazio do repo (commit 7621f3b) — restaurado do commit 0ced8c6
+- Ordens de Serviço: seletor de visualização Lista/Grade/Tabela (salvo no navegador); botão +/− expande o card/linha com editor compacto (salva cada campo ao sair dele) em 2 guias: Dados da OS / Dados para Laudo
+- Modal da OS separado nas mesmas 2 guias
+- Roteiro > Selecionar OS: filtro Tipo de atendimento (Garantia / Orçamento + Fora de garantia); "Sugestões" agora chama POST /api/routes/regional-suggestions (backend/route_intelligence.py, sem LLM): DBSCAN por tempo estimado → semente por região → inserção mais barata com raio de 25 min, bônus mesmo bairro/cidade/prioridade, limite 9 OS e jornada de 9h (45 min/atendimento), 2-opt, tempo real pelas ruas via OSRM público; até 4 roteiros em kanban com rolagem por quadro
+- Não implementado ainda: horários agendados por OS e capacidade por técnico
+- Observação: a URL de preview externa estava servindo outro ambiente (código antigo); testado em localhost
+
 
 ## Sessão atual (20-31/07/2026)
 

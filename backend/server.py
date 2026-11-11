@@ -3470,6 +3470,8 @@ api_router.include_router(inventory_router)
 # Include routes module
 from routes_module import router as routes_router
 api_router.include_router(routes_router)
+from route_intelligence import router as route_intel_router
+api_router.include_router(route_intel_router)
 
 from tracking_module import router as tracking_router
 api_router.include_router(tracking_router)
