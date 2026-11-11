@@ -5,8 +5,9 @@
 - Código backend/frontend/memory copiado para /app; deps pip + yarn instaladas
 - backend/.env preenchido com as chaves não mascaradas + EMERGENT_LLM_KEY; frontend/.env com REACT_APP_SUPABASE_URL
 - Frontend compila e a tela de login abre
-- BLOQUEIO: server.py encerra (sys.exit) sem SUPABASE_SERVICE_KEY — backend não responde até a chave ser adicionada
-- Pendentes: SUPABASE_SERVICE_KEY, SUPABASE_ANON_KEY, REACT_APP_SUPABASE_ANON_KEY, GOOGLE_MAPS_API_KEY, REACT_APP_GOOGLE_MAPS_API_KEY, WA_PERMANENT_TOKEN, ASSINAFY_API_KEY, OLLAMA_API_KEY, PLUGGY_API_KEY, PLUGGY_SECRET, PLUGGY_CONNECT_TOKEN
+- Chaves secretas adicionadas pelo usuário via cartão seguro; backend sobe, login admin OK, lista de OS (7160) carrega
+- Instalados poppler-utils (pdftotext) e libreoffice-impress (indexação de manuais da Mi) — pacotes de sistema, reinstalar se o pod resetar
+- Pendente: GOOGLE_MAPS_API_KEY do backend continua vazia (a do frontend está preenchida)
 
 
 ## Sessão atual (20-31/07/2026)
